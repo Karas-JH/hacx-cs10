@@ -21,12 +21,21 @@ import csv
 
 
 def get_test_files(test_data_dir):
-    """Get all .tif files from test_data directory."""
-    tif_files = sorted(glob.glob(os.path.join(test_data_dir, '*.tif')))
-    if not tif_files:
-        print(f"Error: No .tif files found in {test_data_dir}")
+    """Get all image files (tif/png/jpg) from test_data directory recursively."""
+    patterns = [
+        os.path.join(test_data_dir, '**', '*.tif'),
+        os.path.join(test_data_dir, '**', '*.png'),
+        os.path.join(test_data_dir, '**', '*.jpg'),
+        os.path.join(test_data_dir, '**', '*.jpeg'),
+    ]
+    files = []
+    for pattern in patterns:
+        files.extend(glob.glob(pattern, recursive=True))
+    files = sorted(files)
+    if not files:
+        print(f"Error: No image files found in {test_data_dir}")
         sys.exit(1)
-    return tif_files
+    return files
 
 
 def check_docker_installed():

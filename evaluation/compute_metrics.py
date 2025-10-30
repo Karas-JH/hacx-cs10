@@ -9,16 +9,67 @@ import struct
 import argparse
 
 
-def compute_weighted_f1(predictions_file):
-    # Read predictions
-    df = pd.read_csv(predictions_file)
+def compute_weighted_f1(predictions_file, ground_truth_file):
+    # Read predictions with robustness to empty or partial files
+    try:
+        pred_df = pd.read_csv(predictions_file)
+    except pd.errors.EmptyDataError:
+        print(f"Warning: Predictions file is empty: {predictions_file}")
+        return 0.0
     
     # Remove any empty rows
-    df = df.dropna()
+    pred_df = pred_df.dropna(how='all')
     
-    # Get true and predicted labels
-    y_true = df['actual_class'].values
-    y_pred = df['predicted_class'].values
+    # Validate predictions columns
+    pred_required = {'file_name', 'predicted_class'}
+    if not pred_required.issubset(set(pred_df.columns)):
+        missing = pred_required.difference(set(pred_df.columns))
+        print(f"Warning: Missing required columns in predictions file: {', '.join(sorted(missing))}")
+        return 0.0
+    
+    # Read ground truth
+    try:
+        gt_df = pd.read_csv(ground_truth_file)
+    except pd.errors.EmptyDataError:
+        print(f"Warning: Ground truth file is empty: {ground_truth_file}")
+        return 0.0
+    except FileNotFoundError:
+        print(f"Warning: Ground truth file not found: {ground_truth_file}")
+        return 0.0
+    
+    gt_df = gt_df.dropna(how='all')
+    gt_required = {'file_name', 'actual_class'}
+    if not gt_required.issubset(set(gt_df.columns)):
+        missing = gt_required.difference(set(gt_df.columns))
+        print(f"Warning: Missing required columns in ground truth file: {', '.join(sorted(missing))}")
+        return 0.0
+    
+    # Merge on file_name (many-to-one safe). If duplicates, keep first occurrence.
+    gt_df = gt_df.drop_duplicates(subset=['file_name'])
+    merged = pred_df.merge(gt_df[['file_name', 'actual_class']], on='file_name', how='inner')
+    
+    # Filter invalid rows
+    merged = merged.dropna(subset=['predicted_class', 'actual_class'])
+    if merged.empty:
+        print("Warning: No overlapping rows between predictions and ground truth to compute F1.")
+        return 0.0
+    
+    # Ensure numeric labels
+    try:
+        y_true = merged['actual_class'].astype(int).values
+        y_pred = merged['predicted_class'].astype(int).values
+    except Exception:
+        # If labels are strings like 'smoke', 'haze', 'normal', map to indices
+        label_map = {'smoke': 0, 'haze': 1, 'normal': 2}
+        y_true = merged['actual_class'].map(label_map).values
+        y_pred = merged['predicted_class'].map(label_map).values
+        # Drop rows that failed to map
+        mask = (~pd.isna(y_true)) & (~pd.isna(y_pred))
+        y_true = y_true[mask].astype(int)
+        y_pred = y_pred[mask].astype(int)
+        if len(y_true) == 0:
+            print("Warning: Could not map class labels to integers for F1 computation.")
+            return 0.0
     
     # Compute weighted F1 score
     f1_weighted = f1_score(y_true, y_pred, average='weighted')
@@ -154,6 +205,12 @@ def main():
         help='Directory containing model weight files'
     )
     parser.add_argument(
+        '-g', '--ground-truth',
+        type=str,
+        default='./ground_truth.csv',
+        help='Path to ground truth CSV with columns: file_name, actual_class (file_path optional)'
+    )
+    parser.add_argument(
         '-o', '--output',
         type=str,
         default='./output/eval_result.csv',
@@ -166,10 +223,11 @@ def main():
     predictions_file = args.predictions
     weights_dir = args.weights
     output_file = args.output
+    ground_truth_file = args.ground_truth
     
     # Compute weighted F1 score
-    print("Computing weighted F1 score...")
-    f1_weighted = compute_weighted_f1(predictions_file)
+    print("Computing weighted F1 score (using ground_truth.csv)...")
+    f1_weighted = compute_weighted_f1(predictions_file, ground_truth_file)
     print(f"Weighted F1 Score: {f1_weighted:.4f}")
     
     # Count model parameters
