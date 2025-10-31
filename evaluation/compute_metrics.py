@@ -46,7 +46,12 @@ def compute_weighted_f1(predictions_file, ground_truth_file):
     
     # Merge on file_name (many-to-one safe). If duplicates, keep first occurrence.
     gt_df = gt_df.drop_duplicates(subset=['file_name'])
-    merged = pred_df.merge(gt_df[['file_name', 'actual_class']], on='file_name', how='inner')
+    
+    # Drop actual_class from predictions if it exists (we'll use ground truth values)
+    pred_df_clean = pred_df.drop(columns=['actual_class'], errors='ignore')
+    
+    # Merge with ground truth
+    merged = pred_df_clean.merge(gt_df[['file_name', 'actual_class']], on='file_name', how='inner')
     
     # Filter invalid rows
     merged = merged.dropna(subset=['predicted_class', 'actual_class'])
