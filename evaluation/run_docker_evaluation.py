@@ -21,12 +21,21 @@ import csv
 
 
 def get_test_files(test_data_dir):
-    """Get all .tif files from test_data directory."""
-    tif_files = sorted(glob.glob(os.path.join(test_data_dir, '*.tif')))
-    if not tif_files:
-        print(f"Error: No .tif files found in {test_data_dir}")
+    """Get all image files (tif/png/jpg) from test_data directory recursively."""
+    patterns = [
+        os.path.join(test_data_dir, '**', '*.tif'),
+        os.path.join(test_data_dir, '**', '*.png'),
+        os.path.join(test_data_dir, '**', '*.jpg'),
+        os.path.join(test_data_dir, '**', '*.jpeg'),
+    ]
+    files = []
+    for pattern in patterns:
+        files.extend(glob.glob(pattern, recursive=True))
+    files = sorted(files)
+    if not files:
+        print(f"Error: No image files found in {test_data_dir}")
         sys.exit(1)
-    return tif_files
+    return files
 
 
 def check_docker_installed():
@@ -376,37 +385,60 @@ def main():
         
         # Count model parameters
         if os.path.exists(args.weights):
-            weight_files = glob.glob(os.path.join(args.weights, '*.pth')) + \
-                          glob.glob(os.path.join(args.weights, '*.pt'))
+            weight_files = []
+            for pattern in ['*.pth', '*.pt', '*.h5', '*.hdf5', '*.gguf']:
+                weight_files.extend(glob.glob(os.path.join(args.weights, pattern)))
+
             if weight_files:
                 # Get model file
                 model_file = weight_files[0]
                 model_name = os.path.basename(model_file)
                 results['model_name'] = model_name
-                
-                # Load and count parameters
-                checkpoint = torch.load(model_file, map_location='cpu', weights_only=False)
-                
-                # Extract state dict
-                if isinstance(checkpoint, dict):
-                    if 'model_state_dict' in checkpoint:
-                        state_dict = checkpoint['model_state_dict']
-                    elif 'state_dict' in checkpoint:
-                        state_dict = checkpoint['state_dict']
+
+                total_params = None
+
+                try:
+                    if model_file.endswith(('.pth', '.pt')):
+                        checkpoint = torch.load(model_file, map_location='cpu', weights_only=False)
+
+                        if isinstance(checkpoint, dict):
+                            if 'model_state_dict' in checkpoint:
+                                state_dict = checkpoint['model_state_dict']
+                            elif 'state_dict' in checkpoint:
+                                state_dict = checkpoint['state_dict']
+                            else:
+                                state_dict = checkpoint
+                        else:
+                            state_dict = checkpoint
+
+                        if isinstance(state_dict, dict):
+                            total_params = sum(p.numel() for p in state_dict.values() if isinstance(p, torch.Tensor))
+                        else:
+                            total_params = sum(p.numel() for p in state_dict.parameters())
+
+                    elif model_file.endswith(('.h5', '.hdf5')):
+                        try:
+                            import tensorflow as tf
+
+                            keras_model = tf.keras.models.load_model(model_file, compile=False)
+                            total_params = keras_model.count_params()
+                        except ModuleNotFoundError:
+                            print("Warning: TensorFlow not available to count parameters for .h5 model")
+                        except Exception as e:
+                            print(f"Warning: Could not load Keras model: {e}")
+
                     else:
-                        state_dict = checkpoint
-                else:
-                    state_dict = checkpoint
-                
-                # Count parameters
-                if isinstance(state_dict, dict):
-                    total_params = sum(p.numel() for p in state_dict.values() if isinstance(p, torch.Tensor))
-                else:
-                    total_params = sum(p.numel() for p in state_dict.parameters())
-                
-                print(f"Model: {model_name}")
-                print(f"Model Parameters: {total_params:,}")
-                results['model_parameters'] = total_params
+                        print(f"Warning: Parameter counting not implemented for {model_name}")
+
+                    if total_params is not None:
+                        print(f"Model: {model_name}")
+                        print(f"Model Parameters: {total_params:,}")
+                        results['model_parameters'] = total_params
+                    else:
+                        results['model_parameters'] = 'N/A'
+                except Exception as e:
+                    print(f"Warning: Could not compute parameters for {model_name}: {e}")
+                    results['model_parameters'] = 'Error'
             else:
                 print(f"Warning: No model files found in {args.weights}")
                 total_params = None
@@ -427,21 +459,26 @@ def main():
     print("\n" + "=" * 70)
     print("EVALUATION RESULTS")
     print("=" * 70)
-    
+
     if eval_result and eval_result.get('time_to_last_prediction'):
         throughput = len(test_files) / eval_result['time_to_last_prediction']
     else:
         throughput = len(test_files) / eval_result['total_time'] if eval_result else None
-    
-    print(f"Model Name: {results.get('model_name', 'N/A')}")
+
+    model_name = results.get('model_name', 'N/A')
+    print(f"Model Name: {model_name}")
     print(f"Number of Test Images: {len(test_files)}")
     if throughput is not None:
         print(f"Throughput: {throughput:.2f} files/second")
     if weighted_f1 is not None:
         print(f"Weighted F1 Score: {weighted_f1:.4f}")
-    if total_params is not None:
-        print(f"Model Size: {total_params:,} parameters")
-    
+
+    model_params_value = results.get('model_parameters')
+    if isinstance(model_params_value, (int, float)):
+        print(f"Model Size: {int(model_params_value):,} parameters")
+    elif isinstance(model_params_value, str):
+        print(f"Model Size: {model_params_value}")
+
     print("=" * 70)
     print(f"Results saved to: {results_file}")
     print("=" * 70)
