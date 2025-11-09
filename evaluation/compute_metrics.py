@@ -184,6 +184,33 @@ def count_model_parameters(weights_dir):
                     else:
                         model_params[model_name] = 'N/A (GGUF)'
                 
+                # Handle Keras/TensorFlow H5 models
+                elif weight_file.endswith(('.h5', '.hdf5')):
+                    try:
+                        import tensorflow as tf
+
+                        model = tf.keras.models.load_model(weight_file, compile=False)
+                        model_params[model_name] = model.count_params()
+                    except ModuleNotFoundError:
+                        try:
+                            import h5py
+
+                            total_params = 0
+
+                            def _accumulate(_, obj):
+                                nonlocal total_params
+                                if isinstance(obj, h5py.Dataset):
+                                    total_params += int(np.prod(obj.shape))
+
+                            with h5py.File(weight_file, 'r') as f:
+                                f.visititems(_accumulate)
+
+                            model_params[model_name] = total_params if total_params > 0 else 'N/A'
+                        except Exception:
+                            model_params[model_name] = 'N/A (h5)'
+                    except Exception:
+                        model_params[model_name] = 'Error'
+
             except Exception as e:
                 print(f"Warning: Could not load {model_name}: {str(e)}")
                 model_params[model_name] = 'Error'
